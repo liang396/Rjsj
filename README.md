@@ -4,7 +4,7 @@
 
 当前版本重点完成了两项核心改造：
 
-- 缓存穿透由“空值缓存”思路升级为“布隆过滤器 + Redis 缓存”。
+- 缓存穿透由“空值缓存”升级为“布隆过滤器 + Redis 缓存”。
 - 异步下单由 RabbitMQ/Redis Stream 方案切换为 Kafka 消息队列。
 
 ## 技术栈
@@ -74,6 +74,68 @@
 - Kafka：`localhost:9092`
 - 应用端口：`8081`
 
+## Docker 启动方案
+
+下面是一组适合本项目本地开发的最小启动命令。
+
+### 1. 启动 MySQL
+
+```bash
+docker run -d \
+  --name renjian-mysql \
+  -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=290390 \
+  -e MYSQL_DATABASE=dingping \
+  mysql:8.0
+```
+
+导入初始化脚本：
+
+```bash
+docker exec -i renjian-mysql mysql -uroot -p290390 dingping < src/main/resources/db/hmdp.sql
+```
+
+### 2. 启动 Redis
+
+```bash
+docker run -d \
+  --name renjian-redis \
+  -p 6379:6379 \
+  redis:6.2
+```
+
+### 3. 启动 Kafka
+
+如果本地没有现成 Kafka，开发阶段可以直接用 KRaft 单机模式：
+
+```bash
+docker run -d \
+  --name renjian-kafka \
+  -p 9092:9092 \
+  -e KAFKA_CFG_NODE_ID=1 \
+  -e KAFKA_CFG_PROCESS_ROLES=broker,controller \
+  -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+  -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+  -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+  -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+  -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093 \
+  -e KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true \
+  bitnami/kafka:3.7
+```
+
+### 4. 创建订单 Topic
+
+如果没有开启自动建 Topic，可以手动创建：
+
+```bash
+docker exec -it renjian-kafka kafka-topics.sh \
+  --create \
+  --topic seckill.voucher.order \
+  --bootstrap-server localhost:9092 \
+  --partitions 1 \
+  --replication-factor 1
+```
+
 ## 启动方式
 
 ```bash
@@ -91,10 +153,11 @@ mvn spring-boot:run
 
 - `src/main/resources/db/hmdp.sql`
 
-## 项目说明
+## 接口文档与压测结果
 
-这个仓库当前维护的是“人间食记”版本，不再保留原始 RabbitMQ 异步下单文档描述。若继续演进，建议下一步补充：
+当前仓库暂未内置独立的接口文档与压测报告文件，建议后续补充以下内容：
 
-- Kafka Topic 创建说明
-- Redis / Kafka / MySQL 的 Docker 启动方案
-- 接口文档与压测结果
+- 基于 Apifox / Swagger / Postman 的接口说明
+- 秒杀下单链路的并发压测结果
+- Redis 布隆过滤器命中率与缓存命中率统计
+- Kafka 消费延迟与订单落库耗时统计
