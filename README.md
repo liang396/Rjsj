@@ -25,6 +25,22 @@
 - 用户签到统计
 - 附近商户检索
 
+## 架构总览
+
+```mermaid
+flowchart LR
+    U["User / Client"] --> N["Nginx / Gateway"]
+    N --> A["Spring Boot Application"]
+    A --> R["Redis"]
+    A --> M["MySQL"]
+    A --> K["Kafka"]
+    A --> RD["Redisson"]
+    R --> B["Bloom Filter / Cache / GEO / ZSet / Set / Bitmap / HyperLogLog"]
+    K --> C["Kafka Consumer"]
+    C --> M
+    C --> RD
+```
+
 ## 项目亮点
 
 - **基于 Redis 存储登录态，结合拦截器实现集群环境下的登录校验与权限刷新，解决多节点 Session 共享问题。**
@@ -33,6 +49,46 @@
 - **使用 Redisson 分布式锁按用户维度控制下单并发，保证集群环境下一人一单，并结合乐观锁防止库存超卖。**
 - **基于 Kafka 实现异步下单，将订单落库与库存扣减逻辑从请求链路中解耦，完成削峰填谷，提升秒杀接口吞吐量与响应速度。**
 - **使用 Redis GEO 实现附近商户检索，使用 ZSet 实现点赞排序 / 最近点赞列表，使用 Set 实现关注与共同关注，使用 Bitmap / HyperLogLog 支撑签到统计与 UV 计数。**
+
+## 秒杀下单流程
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant APP as Spring Boot
+    participant R as Redis + Lua
+    participant K as Kafka
+    participant C as Consumer
+    participant DB as MySQL
+
+    U->>APP: 发起秒杀下单请求
+    APP->>R: 执行 Lua 脚本校验库存/重复下单
+    alt 校验失败
+        R-->>APP: 返回失败原因
+        APP-->>U: 库存不足 / 重复下单
+    else 校验成功
+        R-->>APP: 返回成功
+        APP->>K: 投递订单消息
+        APP-->>U: 快速返回订单号
+        K-->>C: 消费订单消息
+        C->>C: Redisson 分布式锁控并发
+        C->>DB: 创建订单并扣减库存
+    end
+```
+
+## 缓存与数据结构设计
+
+| 场景 | Redis 结构 | 作用 |
+| --- | --- | --- |
+| 登录态 | Hash / String | 存储用户登录信息与 Token，支持集群共享 |
+| 商户缓存 | String + 逻辑过期 | 缓存商户详情，降低数据库查询压力 |
+| 非法商户 ID 拦截 | Bloom Filter | 预判数据是否存在，减少缓存穿透 |
+| 秒杀库存预检 | Lua + String + Set | 原子校验库存和一人一单 |
+| 附近商户 | GEO | 基于经纬度完成附近商户检索 |
+| 点赞排序 | ZSet | 存储点赞时间戳，实现最近点赞列表 |
+| 关注关系 | Set | 快速判断关注状态与共同关注 |
+| 用户签到 | Bitmap | 节省存储空间，统计连续签到 |
+| UV 统计 | HyperLogLog | 近似去重统计访问用户数 |
 
 ## 关键实现
 
@@ -52,6 +108,15 @@
 
 - 基于 Redisson 分布式锁按用户粒度串行化下单行为。
 - 数据库层结合乐观锁控制库存扣减，避免超卖。
+
+## 代码结构
+
+- `src/main/java/com/hmdp/service/impl/ShopServiceImpl.java`：商户缓存核心实现
+- `src/main/java/com/hmdp/service/impl/VoucherOrderServiceImpl.java`：秒杀下单核心实现
+- `src/main/java/com/hmdp/listener/SeckillVoucherKafkaListener.java`：Kafka 异步订单消费
+- `src/main/java/com/hmdp/config/ShopBloomFilterInitializer.java`：店铺布隆过滤器初始化
+- `src/main/resources/seckill.lua`：秒杀资格原子校验脚本
+- `src/main/resources/db/hmdp.sql`：数据库初始化脚本
 
 ## 环境依赖
 
@@ -124,18 +189,10 @@ mvn clean package
 mvn spring-boot:run
 ```
 
-## 目录说明
-
-- `src/main/java/com/hmdp/service/impl/ShopServiceImpl.java`：商户缓存核心实现
-- `src/main/java/com/hmdp/service/impl/VoucherOrderServiceImpl.java`：秒杀下单核心实现
-- `src/main/java/com/hmdp/listener/SeckillVoucherKafkaListener.java`：Kafka 异步订单消费
-- `src/main/resources/seckill.lua`：秒杀资格原子校验脚本
-- `src/main/resources/db/hmdp.sql`：数据库初始化脚本
-
 ## 面试可重点展开的话题
 
 - Redis 在登录态、缓存、签到、点赞、关注、UV 统计中的不同数据结构设计
 - 布隆过滤器、逻辑过期、异步重建分别解决什么问题
-- 秒杀场景下 Redis 预检 + Kafka 异步下单的链路拆分思路
+- 秒杀场景中 Redis 预检 + Kafka 异步下单的链路拆分思路
 - Redisson 分布式锁与数据库乐观锁如何配合避免超卖
 - 高并发场景下如何在吞吐量、一致性、可用性之间做取舍
