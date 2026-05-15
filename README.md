@@ -188,11 +188,3 @@ docker exec -it renjian-kafka kafka-topics.sh \
 mvn clean package
 mvn spring-boot:run
 ```
-
-## 面试可重点展开的话题
-
-- Redis 在登录态、缓存、签到、点赞、关注、UV 统计中的不同数据结构设计
-- 布隆过滤器、逻辑过期、异步重建分别解决什么问题
-- 秒杀场景中 Redis 预检 + Kafka 异步下单的链路拆分思路
-- Redisson 分布式锁与数据库乐观锁如何配合避免超卖
-- 高并发场景下如何在吞吐量、一致性、可用性之间做取舍
