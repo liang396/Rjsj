@@ -1,115 +1,112 @@
 # 人间食记
 
-一个基于 Spring Boot 的本地生活服务平台后端项目，聚焦商户查询、优惠券秒杀、点赞关注、签到统计、附近商户检索等核心业务场景。
+一个面向本地生活场景的 Spring Boot 后端项目，围绕商户查询、缓存优化、优惠券秒杀、订单创建与用户互动等核心业务进行设计与实现。
 
-## 项目简介
+## 项目亮点
 
-人间食记围绕高并发下的本地生活服务场景进行设计与实现，重点解决了登录态共享、商户缓存、秒杀下单、分布式并发控制等问题。项目在 Redis 场景化应用、高并发秒杀链路优化、异步削峰等方向做了完整落地。
-
-## 技术栈
-
-- Spring Boot
-- MyBatis-Plus
-- Redis
-- Redisson
-- MySQL
-- Kafka
-- Lua
+- 基于 `Redis + 双拦截器` 实现登录态校验与自动续期，支持分布式场景下的登录状态共享。
+- 围绕商户详情查询设计缓存方案，通过逻辑过期、布隆过滤器等手段降低缓存穿透与热点回源压力。
+- 针对优惠券秒杀场景，使用 `Redis + Lua` 完成库存预检与一人一单校验，将高并发校验前移到缓存层。
+- 使用 `Kafka` 将秒杀下单请求异步化，缩短主链路响应时间，并结合 `Redisson` 与乐观锁减少超卖风险。
+- 基于 `GEO / ZSet / Bitmap / Set` 等 Redis 数据结构实现附近商户、点赞排行、共同关注、签到统计等功能。
 
 ## 核心功能
 
-- 短信登录与登录态刷新
-- 商户详情查询与缓存优化
-- 优惠券秒杀与异步下单
+- 手机号验证码登录
+- 商户列表 / 商户详情查询
+- 商户缓存优化
+- 优惠券秒杀下单
 - 点赞、关注、共同关注
-- 用户签到统计
+- 用户签到与签到统计
 - 附近商户检索
 
-## 架构总览
+## 技术栈
+
+- `Spring Boot`
+- `MyBatis-Plus`
+- `MySQL`
+- `Redis`
+- `Redisson`
+- `Kafka`
+- `Lua`
+
+## 业务架构
 
 ```mermaid
 flowchart LR
-    U["User / Client"] --> N["Nginx / Gateway"]
-    N --> A["Spring Boot Application"]
+    U["用户"] --> A["Spring Boot 应用"]
     A --> R["Redis"]
     A --> M["MySQL"]
     A --> K["Kafka"]
-    A --> RD["Redisson"]
-    R --> B["Bloom Filter / Cache / GEO / ZSet / Set / Bitmap / HyperLogLog"]
-    K --> C["Kafka Consumer"]
+    K --> C["订单消费者"]
     C --> M
-    C --> RD
 ```
 
-## 秒杀下单流程
+## 秒杀链路
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant APP as Spring Boot
+    participant U as 用户
+    participant APP as 应用服务
     participant R as Redis + Lua
     participant K as Kafka
-    participant C as Consumer
     participant DB as MySQL
 
-    U->>APP: 发起秒杀下单请求
-    APP->>R: 执行 Lua 脚本校验库存/重复下单
+    U->>APP: 发起秒杀请求
+    APP->>R: 校验库存与重复下单
     alt 校验失败
-        R-->>APP: 返回失败原因
-        APP-->>U: 库存不足 / 重复下单
+        R-->>APP: 库存不足 / 重复下单
+        APP-->>U: 下单失败
     else 校验成功
-        R-->>APP: 返回成功
+        R-->>APP: 校验通过
         APP->>K: 投递订单消息
-        APP-->>U: 快速返回订单号
-        K-->>C: 消费订单消息
-        C->>C: Redisson 分布式锁控并发
-        C->>DB: 创建订单并扣减库存
+        APP-->>U: 快速返回结果
+        K-->>DB: 异步创建订单并扣减库存
     end
 ```
 
-## 缓存与数据结构设计
+## 关键设计
 
-| 场景 | Redis 结构 | 作用 |
+### 1. 登录与权限校验
+
+- 使用 Redis 存储登录态，避免多节点场景下 Session 不共享问题。
+- 通过双拦截器实现登录态刷新与用户身份校验，减少重复认证开销。
+
+### 2. 商户缓存优化
+
+- 查询前先使用布隆过滤器预判商户是否存在，减少无效请求穿透数据库。
+- 热点商户采用逻辑过期方案，兼顾缓存命中率与系统可用性。
+- 缓存重建异步化，减轻热点数据失效时的瞬时数据库压力。
+
+### 3. 秒杀与下单控制
+
+- 通过 Lua 脚本在 Redis 中原子完成库存校验与一人一单判断。
+- 秒杀请求通过 Kafka 异步削峰，减少接口阻塞时间。
+- 结合 Redisson 分布式锁和数据库乐观锁降低超卖风险。
+
+## Redis 典型应用
+
+| 场景 | 实现方式 | 作用 |
 | --- | --- | --- |
-| 登录态 | Hash / String | 存储用户登录信息与 Token，支持集群共享 |
-| 商户缓存 | String + 逻辑过期 | 缓存商户详情，降低数据库查询压力 |
-| 非法商户 ID 拦截 | Bloom Filter | 预判数据是否存在，减少缓存穿透 |
-| 秒杀库存预检 | Lua + String + Set | 原子校验库存和一人一单 |
-| 附近商户 | GEO | 基于经纬度完成附近商户检索 |
-| 点赞排序 | ZSet | 存储点赞时间戳，实现最近点赞列表 |
-| 关注关系 | Set | 快速判断关注状态与共同关注 |
-| 用户签到 | Bitmap | 节省存储空间，统计连续签到 |
-| UV 统计 | HyperLogLog | 近似去重统计访问用户数 |
+| 登录态 | Hash / String | 存储用户登录信息，支持自动续期 |
+| 商户缓存 | String + 逻辑过期 | 降低商户详情查询回源 |
+| 秒杀资格校验 | Lua + String + Set | 校验库存、一人一单 |
+| 附近商户 | GEO | 实现地理位置检索 |
+| 点赞列表 | ZSet | 获取最近点赞用户 |
+| 共同关注 | Set | 快速计算交集 |
+| 签到统计 | Bitmap | 统计连续签到 |
 
-## 关键实现
+## 项目结构
 
-### 1. 商户缓存优化
-
-- 查询商户前先通过布隆过滤器校验商户 ID，提前拦截非法请求。
-- 热点商户缓存采用逻辑过期方案，避免大量请求同时击穿数据库。
-- 缓存重建放到异步线程执行，兼顾吞吐量与可用性。
-
-### 2. 秒杀下单链路
-
-- 使用 Lua 脚本在 Redis 中完成库存判断、一人一单判断与原子扣减。
-- 秒杀资格校验通过后立即返回订单号，并将订单消息投递到 Kafka。
-- 消费端异步执行订单落库与库存扣减，缩短请求链路耗时。
-
-### 3. 分布式并发控制
-
-- 基于 Redisson 分布式锁按用户粒度串行化下单行为。
-- 数据库层结合乐观锁控制库存扣减，避免超卖。
-
-## 代码结构
-
-- `src/main/java/com/hmdp/service/impl/ShopServiceImpl.java`：商户缓存核心实现
-- `src/main/java/com/hmdp/service/impl/VoucherOrderServiceImpl.java`：秒杀下单核心实现
-- `src/main/java/com/hmdp/listener/SeckillVoucherKafkaListener.java`：Kafka 异步订单消费
-- `src/main/java/com/hmdp/config/ShopBloomFilterInitializer.java`：店铺布隆过滤器初始化
-- `src/main/resources/seckill.lua`：秒杀资格原子校验脚本
+- `src/main/java/com/hmdp/service/impl/ShopServiceImpl.java`：商户缓存实现
+- `src/main/java/com/hmdp/service/impl/VoucherOrderServiceImpl.java`：秒杀下单主流程
+- `src/main/java/com/hmdp/listener/SeckillVoucherKafkaListener.java`：异步订单消费
+- `src/main/resources/seckill.lua`：秒杀资格校验脚本
 - `src/main/resources/db/hmdp.sql`：数据库初始化脚本
 
-## 环境依赖
+## 本地运行
+
+### 环境要求
 
 - JDK 8
 - Maven 3.6+
@@ -117,65 +114,24 @@ sequenceDiagram
 - Redis 6+
 - Kafka 3+
 
-## 快速启动
+### 启动步骤
 
-### 1. 启动 MySQL
-
-```bash
-docker run -d \
-  --name renjian-mysql \
-  -p 3306:3306 \
-  -e MYSQL_ROOT_PASSWORD=290390 \
-  -e MYSQL_DATABASE=dingping \
-  mysql:8.0
-```
-
-导入初始化脚本：
-
-```bash
-docker exec -i renjian-mysql mysql -uroot -p290390 dingping < src/main/resources/db/hmdp.sql
-```
-
-### 2. 启动 Redis
-
-```bash
-docker run -d \
-  --name renjian-redis \
-  -p 6379:6379 \
-  redis:6.2
-```
-
-### 3. 启动 Kafka
-
-```bash
-docker run -d \
-  --name renjian-kafka \
-  -p 9092:9092 \
-  -e KAFKA_CFG_NODE_ID=1 \
-  -e KAFKA_CFG_PROCESS_ROLES=broker,controller \
-  -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-  -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
-  -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-  -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
-  -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093 \
-  -e KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true \
-  bitnami/kafka:3.7
-```
-
-如未开启自动创建 Topic，可手动执行：
-
-```bash
-docker exec -it renjian-kafka kafka-topics.sh \
-  --create \
-  --topic seckill.voucher.order \
-  --bootstrap-server localhost:9092 \
-  --partitions 1 \
-  --replication-factor 1
-```
-
-### 4. 启动项目
+1. 初始化 MySQL 并导入 `src/main/resources/db/hmdp.sql`
+2. 启动 Redis
+3. 启动 Kafka
+4. 执行：
 
 ```bash
 mvn clean package
 mvn spring-boot:run
 ```
+
+## 快速验证
+
+- 登录接口：验证短信登录与 Redis 登录态刷新
+- 商户详情接口：验证缓存命中与热点商户查询
+- 秒杀下单接口：验证库存校验、一人一单与异步下单链路
+
+## 项目定位
+
+这个项目聚焦本地生活服务场景中的高并发与缓存问题，重点体现了我在 `Redis 场景化应用`、`秒杀链路设计`、`异步削峰` 与 `库存并发控制` 方面的后端实践能力。
